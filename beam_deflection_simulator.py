@@ -226,19 +226,86 @@ with col_3d:
     st.subheader("Interactive 3D view")
     z_deformed = deflection_m * magnification
     fig3d = go.Figure()
+
+    # Build a solid 3D beam by sweeping the selected cross-section along the
+    # deflected centreline. The section is enlarged for visibility only; this
+    # does not alter I or any engineering calculations.
+    if section_shape == "Rectangular":
+        # Rectangular section profile in (width-direction y, vertical z).
+        section_y = np.array([-width_m / 2, width_m / 2, width_m / 2, -width_m / 2])
+        section_z = np.array([-depth_m / 2, -depth_m / 2, depth_m / 2, depth_m / 2])
+        section_label = "Rectangular solid beam"
+    else:
+        # Circular profile represented by a polygon with enough sides to look smooth.
+        theta = np.linspace(0, 2 * np.pi, 32, endpoint=False)
+        section_y = (diameter_m / 2) * np.cos(theta)
+        section_z = (diameter_m / 2) * np.sin(theta)
+        section_label = "Circular solid beam"
+
+    # Make the cross-section large enough to see in the long-span 3D view.
+    # This is purely a visualization scale and is separate from physical dimensions.
+    section_max = max(float(np.max(np.abs(section_y)) * 2),
+                      float(np.max(np.abs(section_z)) * 2), 1e-9)
+    visual_section_scale = (span_m * 0.085) / section_max
+    section_y_vis = section_y * visual_section_scale
+    section_z_vis = section_z * visual_section_scale
+    n_profile = len(section_y_vis)
+
+    # Vertices: each station along the beam has the same profile, shifted by
+    # the magnified vertical deflection of its centreline.
+    centreline_z = deflection_m * magnification
+    mesh_x = np.repeat(x, n_profile)
+    mesh_y = np.tile(section_y_vis, len(x))
+    mesh_z = (np.repeat(centreline_z, n_profile)
+              + np.tile(section_z_vis, len(x)))
+
+    # Join neighboring section rings into solid side surfaces.
+    i_faces, j_faces, k_faces = [], [], []
+    for ix in range(len(x) - 1):
+        base = ix * n_profile
+        next_base = (ix + 1) * n_profile
+        for j in range(n_profile):
+            jn = (j + 1) % n_profile
+            a, b = base + j, base + jn
+            c, d = next_base + j, next_base + jn
+            i_faces.extend([a, a, c, b])
+            j_faces.extend([b, c, d, d])
+            k_faces.extend([c, b, b, c])
+
+    # Cap both ends so the cross-section is visibly solid.
+    for j in range(1, n_profile - 1):
+        i_faces.extend([0, (len(x) - 1) * n_profile])
+        j_faces.extend([j, (len(x) - 1) * n_profile + j])
+        k_faces.extend([j + 1, (len(x) - 1) * n_profile + j + 1])
+
+    fig3d.add_trace(
+        go.Mesh3d(
+            x=mesh_x, y=mesh_y, z=mesh_z,
+            i=i_faces, j=j_faces, k=k_faces,
+            color="#4f91c7", opacity=0.92,
+            name=section_label,
+            flatshading=False,
+            lighting=dict(ambient=0.45, diffuse=0.8, specular=0.45, roughness=0.35, fresnel=0.15),
+            lightposition=dict(x=100, y=200, z=300),
+            hoverinfo="skip",
+            showscale=False,
+        )
+    )
+
+    # Centreline overlay helps compare the original and deformed beam.
     fig3d.add_trace(
         go.Scatter3d(
             x=x, y=np.zeros_like(x), z=np.zeros_like(x),
-            mode="lines", name="Original beam",
-            line=dict(color="#64748b", width=7, dash="dash"),
-            hovertemplate="x = %{x:.3f} m<br>Original position<extra></extra>",
+            mode="lines", name="Original centreline",
+            line=dict(color="#64748b", width=4, dash="dash"),
+            hovertemplate="x = %{x:.3f} m<br>Original centreline<extra></extra>",
         )
     )
     fig3d.add_trace(
         go.Scatter3d(
-            x=x, y=np.zeros_like(x), z=z_deformed,
-            mode="lines", name="Deformed beam (magnified)",
-            line=dict(color="#e45756", width=8),
+            x=x, y=np.zeros_like(x), z=centreline_z,
+            mode="lines", name="Deformed centreline (magnified)",
+            line=dict(color="#e45756", width=4),
             customdata=np.column_stack((deflection_m * 1000.0, bending_moment / 1000.0)),
             hovertemplate=("x = %{x:.3f} m<br>Deflection = %{customdata[0]:.4f} mm"
                            "<br>Bending moment = %{customdata[1]:.4f} kN·m<extra></extra>"),
@@ -309,12 +376,49 @@ with col_3d:
             yaxis_title="Width direction (visual only)",
             zaxis_title="Vertical position (magnified)",
             aspectmode="manual",
-            aspectratio=dict(x=1.8, y=0.25, z=0.75),
+            aspectratio=dict(x=1.8, y=0.55, z=0.85),
             camera=dict(eye=dict(x=1.5, y=1.6, z=1.15)),
         ),
     )
     st.plotly_chart(fig3d, use_container_width=True)
-    st.caption(f"The deformed shape is displayed at {magnification}× magnification. Actual deflection: {max_deflection_mm:.3f} mm.")
+    st.caption(
+        f"Solid {section_shape.lower()} cross-section shown in 3D. "
+        f"Cross-section size is visually enlarged for clarity; deformation is shown at "
+        f"{magnification}× magnification. Actual maximum deflection: {max_deflection_mm:.3f} mm."
+    )
+
+    st.subheader("Cross-section view")
+    section_fig = go.Figure()
+    if section_shape == "Rectangular":
+        section_fig.add_trace(go.Scatter(
+            x=[-width_mm/2, width_mm/2, width_mm/2, -width_mm/2, -width_mm/2],
+            y=[-depth_mm/2, -depth_mm/2, depth_mm/2, depth_mm/2, -depth_mm/2],
+            mode="lines", fill="toself", fillcolor="rgba(79,145,199,0.45)",
+            line=dict(color="#2b6f9f", width=3), name="Rectangular section",
+            hovertemplate="Width = %{x:.1f} mm<br>Depth = %{y:.1f} mm<extra></extra>",
+        ))
+        section_fig.update_layout(
+            xaxis_title="Width b (mm)", yaxis_title="Vertical depth h (mm)",
+            title=f"Rectangular section: {width_mm:g} × {depth_mm:g} mm",
+        )
+    else:
+        theta_plot = np.linspace(0, 2*np.pi, 100)
+        section_fig.add_trace(go.Scatter(
+            x=(diameter_mm/2)*np.cos(theta_plot),
+            y=(diameter_mm/2)*np.sin(theta_plot),
+            mode="lines", fill="toself", fillcolor="rgba(79,145,199,0.45)",
+            line=dict(color="#2b6f9f", width=3), name="Circular section",
+            hovertemplate="y = %{x:.1f} mm<br>z = %{y:.1f} mm<extra></extra>",
+        ))
+        section_fig.update_layout(
+            xaxis_title="Width direction (mm)", yaxis_title="Vertical direction (mm)",
+            title=f"Circular section: diameter {diameter_mm:g} mm",
+        )
+    section_fig.update_layout(
+        height=300, margin=dict(l=15, r=15, t=45, b=15),
+        showlegend=False, yaxis=dict(scaleanchor="x", scaleratio=1),
+    )
+    st.plotly_chart(section_fig, use_container_width=True)
 
 with col_2d:
     st.subheader("Deflection curve")
